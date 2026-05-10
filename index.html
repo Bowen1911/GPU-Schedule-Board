@@ -596,6 +596,8 @@
   .form-row label { font-size: 12px; color: var(--muted); }
   .form-row input { width: 100%; padding: 6px 10px; }
   .form-row .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .form-row .sub-field { display: flex; flex-direction: column; gap: 5px; }
+  .form-row .field-hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .modal-footer {
     padding: 12px 18px; border-top: 1px solid var(--border);
     display: flex; justify-content: space-between; gap: 8px;
@@ -675,6 +677,7 @@
     margin-bottom: 8px;
   }
   .reco-head label { color: var(--muted); font-size: 12px; }
+  .reco-head .reco-meta { color: var(--muted); font-size: 11px; }
   .reco-head input { width: 70px; padding: 4px 8px; }
   .reco-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
   .reco-item {
@@ -824,26 +827,34 @@
         <input type="text" id="fName" placeholder="例：训练任务 v3" />
       </div>
       <div class="form-row">
-        <label>占用卡数</label>
-        <input type="number" id="fGpus" min="1" value="8" />
+        <div class="row-2">
+          <div class="sub-field">
+            <label for="fGpus">占用卡数</label>
+            <input type="number" id="fGpus" min="1" value="8" />
+          </div>
+          <div class="sub-field">
+            <label for="fHours">需要时长(小时)</label>
+            <input type="number" id="fHours" min="0.25" step="0.25" value="4" />
+          </div>
+        </div>
       </div>
       <div class="form-row">
-        <label>时间</label>
+        <label>开始 → 截止</label>
         <div class="row-2">
           <input type="text" class="dt-input" id="fStart" placeholder="YYYY-MM-DD HH:mm" data-dt="1" />
           <input type="text" class="dt-input" id="fEnd" placeholder="YYYY-MM-DD HH:mm" data-dt="1" />
         </div>
+        <div class="field-hint" id="durationHint"></div>
       </div>
 
       <div class="reco-box">
         <div class="reco-head">
           <label>智能推荐时段</label>
-          <label style="margin-left:auto">需要时长(小时)</label>
-          <input type="number" id="recoHours" min="0.5" step="0.5" value="4" />
-          <button class="primary" id="recoBtn" style="padding:4px 10px;font-size:12px">推荐</button>
+          <span class="reco-meta" id="recoMeta">将基于上方"占用卡数 × 需要时长"自动推荐</span>
+          <button class="primary" id="recoBtn" style="padding:4px 10px;font-size:12px;margin-left:auto">刷新</button>
         </div>
         <div class="reco-list" id="recoList">
-          <div class="reco-empty">填写"占用卡数"和"需要时长"后点击推荐，自动列出最早可用时段。</div>
+          <div class="reco-empty">填写"占用卡数"和"需要时长"后将自动列出最早可用时段。</div>
         </div>
       </div>
 
@@ -2285,11 +2296,14 @@ function openModal(id) {
   const def_e = t ? t.end : def_s + 4 * HOUR_MS;
   $("#fStart").value = toLocalInput(def_s);
   $("#fEnd").value = toLocalInput(def_e);
-  // default reco hours = task duration
-  $("#recoHours").value = t ? ((t.end - t.start) / HOUR_MS).toFixed(1) : "4";
-  $("#recoList").innerHTML = `<div class="reco-empty">填写"占用卡数"和"需要时长"后点击推荐，自动列出最早可用时段。</div>`;
+  // hours field 与 [start, end] 始终保持一致
+  const initHours = ((def_e - def_s) / HOUR_MS);
+  $("#fHours").value = trimNum(initHours);
+  $("#recoList").innerHTML = `<div class="reco-empty">填写"占用卡数"和"需要时长"后将自动列出最早可用时段。</div>`;
   $("#warnBanner").classList.remove("show");
   $("#warnConfirm").checked = false;
+  updateDurationHint();
+  updateRecoMeta();
 
   const colorRow = $("#colorRow");
   colorRow.innerHTML = "";
@@ -2310,12 +2324,112 @@ function openModal(id) {
   $("#modal").classList.add("show");
   $("#fName").focus();
 
-  // live re-check on field change
-  ["fGpus", "fStart", "fEnd"].forEach(k => {
-    const el = document.getElementById(k);
-    el.oninput = updateWarnBanner;
-  });
+  // live update + auto reco
+  attachModalLinks();
   updateWarnBanner();
+  scheduleRecoRefresh(0); // 打开时立即推荐一次
+}
+
+// ============== Modal field linking ==============
+// 数值联动：
+//   fHours  → 推算 fEnd（保持 fStart）
+//   fStart  → 平移 fEnd（保持时长）
+//   fEnd    → 反推 fHours（保持 fStart）
+//   fGpus / fHours 变化 → 自动刷新推荐时段
+let _recoTimer = null;
+let _linksAttached = false;
+function attachModalLinks() {
+  if (_linksAttached) return;
+  _linksAttached = true;
+
+  const startEl = $("#fStart");
+  const endEl   = $("#fEnd");
+  const hoursEl = $("#fHours");
+  const gpusEl  = $("#fGpus");
+
+  // hours → end
+  const onHoursChange = () => {
+    const start = fromLocalInput(startEl.value);
+    const hours = parseFloat(hoursEl.value);
+    if (start && isFinite(hours) && hours > 0) {
+      endEl.value = toLocalInput(Math.round(start + hours * HOUR_MS));
+    }
+    updateDurationHint();
+    updateWarnBanner();
+    updateRecoMeta();
+    scheduleRecoRefresh();
+  };
+  hoursEl.addEventListener("input", onHoursChange);
+  hoursEl.addEventListener("change", onHoursChange);
+
+  // start → 平移 end（保持当前 hours）
+  const onStartChange = () => {
+    const start = fromLocalInput(startEl.value);
+    const hours = parseFloat(hoursEl.value);
+    if (start && isFinite(hours) && hours > 0) {
+      endEl.value = toLocalInput(Math.round(start + hours * HOUR_MS));
+    }
+    updateDurationHint();
+    updateWarnBanner();
+  };
+  startEl.addEventListener("input", onStartChange);
+  startEl.addEventListener("change", onStartChange);
+
+  // end → 反推 hours
+  const onEndChange = () => {
+    const start = fromLocalInput(startEl.value);
+    const end   = fromLocalInput(endEl.value);
+    if (start && end && end > start) {
+      hoursEl.value = trimNum((end - start) / HOUR_MS);
+    }
+    updateDurationHint();
+    updateWarnBanner();
+    updateRecoMeta();
+    scheduleRecoRefresh();
+  };
+  endEl.addEventListener("input", onEndChange);
+  endEl.addEventListener("change", onEndChange);
+
+  // gpus → 刷新推荐 + 警告
+  gpusEl.addEventListener("input", () => {
+    updateWarnBanner();
+    updateRecoMeta();
+    scheduleRecoRefresh();
+  });
+}
+
+function trimNum(n) {
+  // 4 → "4"; 4.5 → "4.5"; 4.25 → "4.25"
+  return (Math.round(n * 100) / 100).toString();
+}
+
+function updateDurationHint() {
+  const start = fromLocalInput($("#fStart").value);
+  const end   = fromLocalInput($("#fEnd").value);
+  const hint  = $("#durationHint");
+  if (!hint) return;
+  if (start && end && end > start) {
+    hint.textContent = `时长 ${fmtDur(end - start)} · 截止 ${fmtDateTime(end)}`;
+    hint.style.color = "";
+  } else if (start && end && end <= start) {
+    hint.textContent = "结束时间需晚于开始时间";
+    hint.style.color = "var(--danger)";
+  } else {
+    hint.textContent = "";
+  }
+}
+
+function updateRecoMeta() {
+  const meta = $("#recoMeta");
+  if (!meta) return;
+  const gpus = Math.max(1, parseInt($("#fGpus").value, 10) || 1);
+  const hours = Math.max(0.25, parseFloat($("#fHours").value) || 0);
+  meta.textContent = `条件：${gpus} 卡 × ${trimNum(hours)} 小时`;
+}
+
+function scheduleRecoRefresh(delay = 250) {
+  clearTimeout(_recoTimer);
+  _recoTimer = setTimeout(recommendSlots, delay);
 }
 
 function updateWarnBanner() {
@@ -2350,13 +2464,13 @@ function updateWarnBanner() {
 
 function recommendSlots() {
   const gpus = Math.max(1, parseInt($("#fGpus").value, 10) || 1);
-  const hours = Math.max(0.25, parseFloat($("#recoHours").value) || 1);
+  const hours = Math.max(0.25, parseFloat($("#fHours").value) || 1);
   const dur = Math.round(hours * HOUR_MS);
   const slots = suggestSlots(gpus, dur, 6);
   const list = $("#recoList");
   list.innerHTML = "";
   if (slots.length === 0) {
-    list.innerHTML = `<div class="reco-empty">在未来 14 天内未找到可容纳 <b>${gpus}</b> 卡 × <b>${hours}</b>h 的连续空闲时段（当前总配额 ${state.quota}）。考虑减小卡数或时长。</div>`;
+    list.innerHTML = `<div class="reco-empty">在未来 14 天内未找到可容纳 <b>${gpus}</b> 卡 × <b>${trimNum(hours)}</b>h 的连续空闲时段（当前总配额 ${state.quota}）。考虑减小卡数或时长。</div>`;
     return;
   }
   for (const s of slots) {
@@ -2369,8 +2483,10 @@ function recommendSlots() {
     item.addEventListener("click", () => {
       $("#fStart").value = toLocalInput(s.start);
       $("#fEnd").value = toLocalInput(s.end);
+      $("#fHours").value = trimNum((s.end - s.start) / HOUR_MS);
       list.querySelectorAll(".reco-item").forEach(x => x.style.borderColor = "");
       item.style.borderColor = "var(--accent)";
+      updateDurationHint();
       updateWarnBanner();
     });
     list.appendChild(item);
