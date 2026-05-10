@@ -2,6 +2,8 @@
 
 一个零依赖、单文件的 GPU 集群排期看板。打开就用，本地存储，可选云端同步。
 
+🚀 **[在线体验 →](https://bowen1911.github.io/GPU-Schedule-Board/)**
+
 ![Built with](https://img.shields.io/badge/stack-vanilla%20HTML-blue) ![Storage](https://img.shields.io/badge/storage-localStorage%20%2B%20JSON-success) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ## ✨ 特色
@@ -18,10 +20,10 @@
 
 ```bash
 # 1. 直接双击打开
-open gpu-board/index.html
+open index.html
 
 # 2. 或起个本地静态服务（推荐，云同步功能需要 https/localhost）
-cd gpu-board && python3 -m http.server 8080
+python3 -m http.server 8080
 # 访问 http://localhost:8080
 ```
 
@@ -35,7 +37,7 @@ git push -u origin main
 ```
 
 仓库 → **Settings → Pages → Source: `main` / `/ (root)`**，几十秒后即可访问
-`https://<you>.github.io/<repo>/gpu-board/`。
+`https://<you>.github.io/<repo>/`。
 
 ## 💾 数据与同步
 
@@ -64,8 +66,7 @@ git push -u origin main
 
 ```
 .
-├── gpu-board/
-│   └── index.html      # 全部代码与样式
+├── index.html      # 全部代码与样式
 └── README.md
 ```
 
