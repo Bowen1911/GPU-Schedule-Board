@@ -73,3 +73,13 @@ git push -u origin main
 ## License
 
 MIT
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=Bowen1911%2FGPU-Schedule-Board&type=date&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Bowen1911/GPU-Schedule-Board&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Bowen1911/GPU-Schedule-Board&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Bowen1911/GPU-Schedule-Board&type=date&legend=bottom-right" />
+ </picture>
+</a>
