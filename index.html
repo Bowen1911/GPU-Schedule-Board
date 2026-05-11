@@ -703,6 +703,66 @@
   .reco-item .rf { color: var(--ok); font-weight: 600; font-size: 11px; }
   .reco-empty { color: var(--muted); font-size: 11px; padding: 6px 0; }
 
+  /* ============== Context menu ============== */
+  .ctx-menu {
+    position: fixed; z-index: 1000;
+    min-width: 180px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 0;
+    box-shadow: 0 8px 24px var(--shadow);
+    font-size: 12px;
+    display: none;
+  }
+  .ctx-menu.show { display: block; }
+  .ctx-menu .ctx-item {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px;
+    padding: 6px 12px;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+  }
+  .ctx-menu .ctx-item:hover:not(.disabled) { background: var(--row-hover); color: var(--accent); }
+  .ctx-menu .ctx-item.disabled { color: var(--muted); cursor: not-allowed; opacity: 0.55; }
+  .ctx-menu .ctx-item.danger { color: var(--danger); }
+  .ctx-menu .ctx-item.danger:hover:not(.disabled) { background: rgba(248, 81, 73, 0.1); color: var(--danger); }
+  .ctx-menu .ctx-sep {
+    height: 1px; margin: 4px 6px;
+    background: var(--border);
+  }
+  .ctx-menu .ctx-shortcut {
+    color: var(--muted); font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ctx-menu .ctx-item:hover:not(.disabled) .ctx-shortcut { color: var(--accent); }
+  .ctx-menu .ctx-item.danger:hover:not(.disabled) .ctx-shortcut { color: var(--danger); }
+
+  /* ============== Cursor time indicator (hover on gantt) ============== */
+  .cursor-line {
+    position: absolute; top: 0; bottom: 0;
+    width: 0; border-left: 1px dashed var(--accent);
+    pointer-events: none; z-index: 80;
+    opacity: 0.55;
+    display: none;
+  }
+  .cursor-line.show { display: block; }
+  .cursor-time-label {
+    position: fixed;
+    background: var(--accent); color: #0d1117;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 11px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 81;
+    box-shadow: 0 1px 4px var(--shadow);
+    transform: translateX(-50%);
+    display: none;
+  }
+  [data-theme="light"] .cursor-time-label { color: #fff; }
+  .cursor-time-label.show { display: block; }
+
   .help-tip {
     color: var(--muted); font-size: 11px; padding: 6px 16px 12px;
     line-height: 1.55;
@@ -794,7 +854,7 @@
       <h3>任务列表 <span id="taskCount" style="color:var(--muted);font-weight:400">0</span></h3>
       <div class="task-list" id="taskList"></div>
       <div class="help-tip">
-        快捷键：<kbd>N</kbd> 新建 · 选中后连按两次 <kbd>⌫</kbd> 删除（Mac 友好） · <kbd>⌘/Ctrl</kbd>+<kbd>Z</kbd> 撤回 · <kbd>⌘/Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>Z</kbd> 重做 · <kbd>Esc</kbd> 取消 · <kbd>Ctrl/⌘</kbd>+滚轮 缩放 · 点击/拖动条目编辑
+        快捷键：<kbd>N</kbd> 新建 · 选中后连按两次 <kbd>⌫</kbd> 删除（Mac 友好） · <kbd>⌘/Ctrl</kbd>+<kbd>C</kbd> 复制 · <kbd>⌘/Ctrl</kbd>+<kbd>V</kbd> 粘贴 · <kbd>⌘/Ctrl</kbd>+<kbd>Z</kbd> 撤回 · <kbd>⌘/Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>Z</kbd> 重做 · <kbd>Esc</kbd> 取消 · <kbd>Ctrl/⌘</kbd>+滚轮 缩放 · 右键唤出菜单 · 点击/拖动条目编辑
       </div>
     </aside>
     <div class="resizer" id="sidebarResizer" title="拖动调整宽度，拖到最小值会自动折叠">
@@ -900,6 +960,22 @@
 </div>
 
 <div class="tooltip" id="tooltip"></div>
+
+<!-- Cursor time indicator (hover on gantt area) -->
+<div class="cursor-line" id="cursorLine"></div>
+<div class="cursor-time-label" id="cursorTimeLabel"></div>
+
+<!-- Context menu -->
+<div class="ctx-menu" id="ctxMenu" role="menu">
+  <div class="ctx-item" data-action="new"><span>新建任务</span><span class="ctx-shortcut">N</span></div>
+  <div class="ctx-item" data-action="edit"><span>编辑任务…</span><span class="ctx-shortcut">双击</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" data-action="copy"><span>复制</span><span class="ctx-shortcut">⌘/Ctrl + C</span></div>
+  <div class="ctx-item" data-action="paste"><span>粘贴到此处</span><span class="ctx-shortcut">⌘/Ctrl + V</span></div>
+  <div class="ctx-item" data-action="duplicate"><span>原地复制一份</span><span class="ctx-shortcut">⌘/Ctrl + D</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item danger" data-action="delete"><span>删除任务</span><span class="ctx-shortcut">⌫⌫</span></div>
+</div>
 
 <script>
 "use strict";
@@ -2754,9 +2830,36 @@ document.addEventListener("keydown", (e) => {
     undo();
     return;
   }
+  // Copy: ⌘/Ctrl + C  (only when a task is selected and focus not in a text field)
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "c" || e.key === "C")) {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (window.getSelection && String(window.getSelection()).length > 0) return; // 让浏览器处理文本复制
+    if (!state.selectedId) return;
+    e.preventDefault();
+    copySelectedTask();
+    return;
+  }
+  // Paste: ⌘/Ctrl + V
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "v" || e.key === "V")) {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (!clipboardTask) return;
+    e.preventDefault();
+    pasteTask(); // 自动找位置
+    return;
+  }
+  // Duplicate: ⌘/Ctrl + D
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (!state.selectedId) return;
+    e.preventDefault();
+    duplicateSelectedTask();
+    return;
+  }
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (e.key === "n" || e.key === "N") { e.preventDefault(); openModal(null); }
   if (e.key === "Escape") {
+    // 右键菜单优先：如果在显示状态，仅由专门的处理器关闭它，不再清选中
+    if ($("#ctxMenu").classList.contains("show")) return;
     if (state.pendingDeleteId) { clearPendingDelete(); setStatus("已取消删除"); }
     else if (state.selectedId) { clearSelection(); setStatus("已取消选中"); }
     return;
@@ -2786,11 +2889,229 @@ document.addEventListener("mousedown", (e) => {
   if (e.target.closest(".task-item")) return;
   if (e.target.closest(".modal")) return;
   if (e.target.closest(".sync-popover")) return;
+  if (e.target.closest("#ctxMenu")) return;
   if (e.target.closest("button, select, input, textarea, label")) return;
   clearSelection();
 });
 
-// ============== Pinch / Ctrl-Wheel zoom on canvas ==============
+// ============== Clipboard (copy / paste / duplicate task) ==============
+// 内存中的剪贴板，仅本会话有效。粘贴时自动在「鼠标位置」或「最早可用空闲时段」插入。
+let clipboardTask = null;        // 复制的任务模板（不含 id）
+let lastCursorContentX = null;   // 鼠标在 canvas-inner 上的 X（用于粘贴定位）
+
+function copySelectedTask() {
+  if (!state.selectedId) return;
+  const t = state.tasks.find(x => x.id === state.selectedId);
+  if (!t) return;
+  clipboardTask = {
+    name: t.name, gpus: t.gpus, color: t.color,
+    duration: t.end - t.start,
+  };
+  setStatus(`已复制：${t.name}（${fmtDur(clipboardTask.duration)} · ${t.gpus} 卡）`);
+}
+
+function pasteTask(targetTime) {
+  if (!clipboardTask) {
+    setStatus("剪贴板为空：先选中一个任务并按 ⌘/Ctrl+C 复制");
+    return;
+  }
+  let start = targetTime;
+  // 1) 显式传入目标时间（来自右键菜单"粘贴到此处"）
+  // 2) 否则用鼠标在 canvas 内的最近 X 推算时间
+  // 3) 都没有则用 suggestSlots 找最早可用时段
+  if (start == null && lastCursorContentX != null) {
+    const range = computeRange();
+    start = snap(xToTime(lastCursorContentX, range));
+  }
+  if (start == null) {
+    const slots = suggestSlots(clipboardTask.gpus, clipboardTask.duration, 1);
+    if (slots.length > 0) {
+      start = slots[0].start;
+    } else {
+      // 兜底：现在的下一个整点
+      start = Math.ceil(Date.now() / HOUR_MS) * HOUR_MS;
+    }
+  }
+  start = snap(start);
+  const newTask = {
+    id: uid(),
+    name: clipboardTask.name + " (副本)",
+    gpus: clipboardTask.gpus,
+    color: clipboardTask.color,
+    start,
+    end: start + clipboardTask.duration,
+  };
+  pushHistory("粘贴任务");
+  state.tasks.push(newTask);
+  save();
+  selectTask(newTask.id);
+  render();
+  setStatus(`已粘贴：${newTask.name} @ ${fmtDateTime(newTask.start)}（可继续拖动微调）`);
+}
+
+function duplicateSelectedTask() {
+  if (!state.selectedId) return;
+  copySelectedTask();
+  // 原地复制：起点 = 原任务结束 + 1 小时（避免重叠），如果不空则放最早空时段
+  const t = state.tasks.find(x => x.id === state.selectedId);
+  if (!t) return;
+  pasteTask(t.end);
+}
+
+// ============== Cursor time indicator (hover on gantt area) ==============
+// 鼠标在画布内移动时，显示一条垂直线，并在时间轴上方浮动展示具体时间标签。
+const cursorLine = $("#cursorLine");
+const cursorTimeLabel = $("#cursorTimeLabel");
+function updateCursorTime(e) {
+  const rect = canvasInner.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  if (x < 0 || x > canvasInner.clientWidth) {
+    hideCursorTime();
+    return;
+  }
+  // 仅当鼠标 Y 落在「时间轴 / 甘特行 / 柱状图」三个区域内时才显示，
+  // 其他区域（如柱状图标题、柱状图下方空白等）不显示。
+  const y = e.clientY;
+  const headerRect = timelineHeader.getBoundingClientRect();
+  const ganttRect  = ganttArea.getBoundingClientRect();
+  const utilRect   = utilArea.getBoundingClientRect();
+  const inHeader = y >= headerRect.top && y <= headerRect.bottom;
+  const inGantt  = ganttRect.height  > 0 && y >= ganttRect.top  && y <= ganttRect.bottom;
+  const inUtil   = utilRect.height   > 0 && y >= utilRect.top   && y <= utilRect.bottom;
+  if (!inHeader && !inGantt && !inUtil) {
+    hideCursorTime();
+    return;
+  }
+  lastCursorContentX = x;
+  const range = computeRange();
+  const t = xToTime(x, range);
+
+  // line 放在 canvasInner 上 (absolute)
+  cursorLine.style.left = x + "px";
+  cursorLine.classList.add("show");
+  // 把 cursorLine 挂到 canvasInner 内（首次）
+  if (cursorLine.parentNode !== canvasInner) {
+    canvasInner.appendChild(cursorLine);
+  }
+
+  // label 用 fixed 定位贴在 timeline-header 下沿
+  cursorTimeLabel.textContent = fmtDateTime(t);
+  cursorTimeLabel.style.left = e.clientX + "px";
+  cursorTimeLabel.style.top  = (headerRect.bottom - 18) + "px";
+  cursorTimeLabel.classList.add("show");
+}
+function hideCursorTime() {
+  cursorLine.classList.remove("show");
+  cursorTimeLabel.classList.remove("show");
+}
+canvasWrap.addEventListener("mousemove", (e) => {
+  // 在 modal/contextmenu 打开时不显示
+  if ($("#modal").classList.contains("show")) { hideCursorTime(); return; }
+  updateCursorTime(e);
+});
+canvasWrap.addEventListener("mouseleave", hideCursorTime);
+canvasWrap.addEventListener("scroll", hideCursorTime);
+
+// ============== Context menu ==============
+const ctxMenu = $("#ctxMenu");
+let ctxTargetTaskId = null;
+let ctxTargetTime = null; // 右键时鼠标对应的时间戳（用于"粘贴到此处"）
+
+function openContextMenu(e, opts) {
+  ctxTargetTaskId = opts.taskId || null;
+  ctxTargetTime   = opts.time   || null;
+  // 更新各项可用状态
+  const items = ctxMenu.querySelectorAll(".ctx-item");
+  items.forEach(it => {
+    const a = it.dataset.action;
+    let disabled = false;
+    if (a === "edit" || a === "copy" || a === "duplicate" || a === "delete") {
+      disabled = !ctxTargetTaskId;
+    } else if (a === "paste") {
+      disabled = !clipboardTask;
+    }
+    it.classList.toggle("disabled", disabled);
+  });
+  // 先显示再算尺寸防止越界
+  ctxMenu.style.left = "0px";
+  ctxMenu.style.top  = "0px";
+  ctxMenu.classList.add("show");
+  const rect = ctxMenu.getBoundingClientRect();
+  const x = Math.min(e.clientX, window.innerWidth  - rect.width  - 6);
+  const y = Math.min(e.clientY, window.innerHeight - rect.height - 6);
+  ctxMenu.style.left = x + "px";
+  ctxMenu.style.top  = y + "px";
+}
+function closeContextMenu() {
+  ctxMenu.classList.remove("show");
+  ctxTargetTaskId = null;
+  ctxTargetTime   = null;
+}
+
+// 右键：在画布上 → 自定义菜单
+canvasWrap.addEventListener("contextmenu", (e) => {
+  // 仅在画布区域生效；如果点中了某个 task-bar，则把它作为目标
+  const bar = e.target.closest(".task-bar");
+  e.preventDefault();
+  let taskId = null;
+  let time   = null;
+  if (bar) {
+    taskId = bar.dataset.id;
+    selectTask(taskId);
+  } else {
+    // 推算时间
+    const rect = canvasInner.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (x >= 0 && x <= canvasInner.clientWidth) {
+      const range = computeRange();
+      time = snap(xToTime(x, range));
+    }
+  }
+  openContextMenu(e, { taskId, time });
+});
+
+// 任务列表也支持右键
+$("#taskList").addEventListener("contextmenu", (e) => {
+  const item = e.target.closest(".task-item");
+  if (!item) return;
+  e.preventDefault();
+  const id = item.dataset.id;
+  if (id) {
+    selectTask(id);
+    openContextMenu(e, { taskId: id });
+  }
+});
+
+// 点击菜单项
+ctxMenu.addEventListener("click", (e) => {
+  const item = e.target.closest(".ctx-item");
+  if (!item || item.classList.contains("disabled")) return;
+  const action = item.dataset.action;
+  const tid = ctxTargetTaskId;
+  const tt  = ctxTargetTime;
+  closeContextMenu();
+  switch (action) {
+    case "new":       openModal(null); break;
+    case "edit":      if (tid) openModal(tid); break;
+    case "copy":      if (tid) { selectTask(tid); copySelectedTask(); } break;
+    case "duplicate": if (tid) { selectTask(tid); duplicateSelectedTask(); } break;
+    case "paste":     pasteTask(tt); break;
+    case "delete":    if (tid) deleteTaskById(tid); break;
+  }
+});
+// 任意位置点击/Esc/滚动 → 关闭
+document.addEventListener("mousedown", (e) => {
+  if (!ctxMenu.classList.contains("show")) return;
+  if (e.target.closest("#ctxMenu")) return;
+  closeContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && ctxMenu.classList.contains("show")) closeContextMenu();
+});
+window.addEventListener("blur", closeContextMenu);
+canvasWrap.addEventListener("scroll", closeContextMenu);
+
+
 // On macOS trackpad pinch, browsers dispatch a wheel event with ctrlKey=true.
 // Holding Ctrl/⌘ + scroll also triggers this. We use the cursor X as anchor so
 // the timestamp under the cursor stays in place across zoom levels.
