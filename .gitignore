@@ -59,3 +59,6 @@ yarn-error.log*
 .workbuddy/
 node_modules/
 .codebuddy/
+
+# ===== 开发日志（仅本地参考，不进 Git） =====
+DEVLOG.md

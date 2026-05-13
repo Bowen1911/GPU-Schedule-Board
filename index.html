@@ -1272,8 +1272,11 @@ const DAY_MS = 24 * HOUR_MS;
 const state = {
   quota: 64,
   tasks: [],          // {id,name,start,end,gpus,color,benchmark?,taskType?}
-  // Benchmark 历史时长记录: { "SuperGPQA": { 32: 43, 64: 36 }, ... }
-  // 单位：小时。每次保存任务时若选了 benchmark 则更新对应卡数的最近一次时长。
+  // Benchmark 历史时长记录（按"任务类型"分桶，互不污染）
+  //   { "SuperGPQA": { "评估": { 32: 43, 64: 36 }, "训练": { 64: 120 }, "": {...} }, ... }
+  // 单位：小时。每次保存任务时若选了 benchmark 则把
+  //   (benchmark, taskType||"", gpus) → hours 更新进对应桶。
+  // 兼容性：load() 会把旧扁平结构 {gpus:hours} 自动迁移到 [""]（即"未指定类型"桶）。
   benchmarks: {
     "AIME 2025": {},
     "AIME 2026": {},
@@ -1553,6 +1556,71 @@ function attachSidebarResizer() {
   });
 }
 
+// Benchmarks 二级结构：state.benchmarks[bm][taskType||""] = { gpus: hours }
+//   - 任务类型为空（用户没选）时落到 [""] 桶，仍可独立工作
+//   - 任务类型 = 评估 / 训练 等各占一桶，推荐时长不互相覆盖
+//
+// migrateBenchmarks(): 把"早期扁平结构 {bm: {gpus:hours}}"升级到二级结构。
+// 判定标准：如果 bm 的任意 value 是 number，认为是旧扁平结构，整桶搬到 [""] 子桶下；
+// 如果 value 已是 object，则保持。
+function migrateBenchmarks(bms) {
+  if (!bms || typeof bms !== "object") return {};
+  const out = {};
+  for (const bm of Object.keys(bms)) {
+    const v = bms[bm];
+    if (!v || typeof v !== "object") { out[bm] = {}; continue; }
+    const vals = Object.values(v);
+    const isFlat = vals.length > 0 && vals.every(x => typeof x === "number");
+    if (isFlat) {
+      out[bm] = { "": Object.assign({}, v) };       // 旧数据落到"未指定类型"桶
+    } else {
+      // 已是嵌套：但仍要把每个子桶规范化（剔除 number 之外的脏数据 / 嵌套）
+      const nested = {};
+      for (const tt of Object.keys(v)) {
+        const sub = v[tt];
+        if (sub && typeof sub === "object") {
+          const clean = {};
+          for (const g of Object.keys(sub)) {
+            if (typeof sub[g] === "number" && isFinite(sub[g]) && sub[g] > 0) clean[g] = sub[g];
+          }
+          nested[tt] = clean;
+        }
+      }
+      out[bm] = nested;
+    }
+  }
+  return out;
+}
+
+// 取/写 (benchmark, taskType) 对应的 { gpus: hours } 桶。
+function bmGetBucket(bm, taskType) {
+  if (!bm) return null;
+  const root = state.benchmarks[bm];
+  if (!root || typeof root !== "object") return null;
+  const key = taskType || "";
+  const sub = root[key];
+  return (sub && typeof sub === "object") ? sub : null;
+}
+function bmEnsureBucket(bm, taskType) {
+  if (!state.benchmarks[bm] || typeof state.benchmarks[bm] !== "object"
+      || Object.values(state.benchmarks[bm]).some(v => typeof v === "number")) {
+    // 自愈：发现还没迁移的脏数据，就地迁移再写
+    state.benchmarks[bm] = migrateBenchmarks({[bm]: state.benchmarks[bm] || {}})[bm];
+  }
+  const key = taskType || "";
+  if (!state.benchmarks[bm][key]) state.benchmarks[bm][key] = {};
+  return state.benchmarks[bm][key];
+}
+// 把 (bm, tt) 桶里的卡数 → 时长全部以"卡数升序"列出
+function bmListCards(bm, taskType) {
+  const bucket = bmGetBucket(bm, taskType);
+  if (!bucket) return [];
+  return Object.keys(bucket)
+    .map(n => parseInt(n, 10))
+    .filter(n => isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+}
+
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -1565,6 +1633,8 @@ function load() {
     if (data.benchmarks && typeof data.benchmarks === "object") {
       // merge 默认 benchmark + 已存的，保证默认四个永远在
       state.benchmarks = Object.assign({}, state.benchmarks, data.benchmarks);
+      // 兼容旧扁平结构 → 新二级结构 (按任务类型分桶)
+      state.benchmarks = migrateBenchmarks(state.benchmarks);
     }
     if (Array.isArray(data.taskTypes) && data.taskTypes.length > 0) {
       state.taskTypes = data.taskTypes.filter(x => typeof x === "string" && x.trim());
@@ -1855,6 +1925,7 @@ async function syncMergeFromFile(opts) {
         state.tasks = remote.tasks;
         if (remote.benchmarks && typeof remote.benchmarks === "object") {
           state.benchmarks = Object.assign({}, state.benchmarks, remote.benchmarks);
+          state.benchmarks = migrateBenchmarks(state.benchmarks);
         }
         if (Array.isArray(remote.taskTypes) && remote.taskTypes.length > 0) {
           state.taskTypes = remote.taskTypes.filter(x => typeof x === "string" && x.trim());
@@ -1916,6 +1987,7 @@ async function syncMergeFromFile(opts) {
       state.tasks = remote.tasks;
       if (remote.benchmarks && typeof remote.benchmarks === "object") {
         state.benchmarks = Object.assign({}, state.benchmarks, remote.benchmarks);
+        state.benchmarks = migrateBenchmarks(state.benchmarks);
       }
       if (Array.isArray(remote.taskTypes) && remote.taskTypes.length > 0) {
         state.taskTypes = remote.taskTypes.filter(x => typeof x === "string" && x.trim());
@@ -3039,20 +3111,20 @@ function refreshTaskTypeSelect(selectedType) {
 }
 
 function refreshGpusHistory() {
-  // 把当前选中 benchmark 历史卡数填充到 datalist；未选则清空
+  // 把当前 (benchmark, taskType) 的历史卡数填充到 datalist；任一未选 / 无记录则清空
   const dl = $("#fGpusHistory");
   if (!dl) return;
   const bm = $("#fBenchmark").value;
+  const tt = ($("#fTaskType")?.value) || "";
   dl.innerHTML = "";
-  if (!bm || !state.benchmarks[bm]) return;
-  const cards = Object.keys(state.benchmarks[bm])
-    .map(n => parseInt(n, 10))
-    .filter(n => isFinite(n) && n > 0)
-    .sort((a, b) => a - b);
+  if (!bm) return;
+  const cleanTt = (tt === SENT_NEW || tt === SENT_DEL) ? "" : tt;
+  const cards = bmListCards(bm, cleanTt);
+  const bucket = bmGetBucket(bm, cleanTt) || {};
   for (const c of cards) {
     const opt = document.createElement("option");
     opt.value = String(c);
-    opt.label = `${c} 卡（历史 ${trimNum(state.benchmarks[bm][c])}h）`;
+    opt.label = `${c} 卡（历史 ${trimNum(bucket[c])}h）`;
     dl.appendChild(opt);
   }
 }
@@ -3060,20 +3132,23 @@ function refreshGpusHistory() {
 function refreshGpusPresets() {
   // 占用卡数下方的预设芯片：[32卡·43h ✕] [64卡·36h ✕]
   // 整片可点 = 一键填卡数+应用时长；右侧 ✕ = 删除该条历史记录
+  // 数据来自当前 (benchmark, taskType) 桶，类型不同推荐互不混用
   const wrap = $("#fGpusPresets");
   if (!wrap) return;
   wrap.innerHTML = "";
   const bm = $("#fBenchmark").value;
-  if (!bm || !state.benchmarks[bm]) return;
-  const cards = Object.keys(state.benchmarks[bm])
-    .map(n => parseInt(n, 10))
-    .filter(n => isFinite(n) && n > 0)
-    .sort((a, b) => a - b);
+  const tt = ($("#fTaskType")?.value) || "";
+  if (!bm) return;
+  const cleanTt = (tt === SENT_NEW || tt === SENT_DEL) ? "" : tt;
+  const cards = bmListCards(bm, cleanTt);
+  const bucket = bmGetBucket(bm, cleanTt) || {};
+  // 当前桶的语义提示：未选类型 → 通用桶；选了类型 → 本类型专用
+  const ttLabel = cleanTt ? `「${cleanTt}」` : "通用（未指定类型）";
   for (const c of cards) {
-    const hours = state.benchmarks[bm][c];
+    const hours = bucket[c];
     const chip = document.createElement("div");
     chip.className = "bm-preset";
-    chip.title = `应用：${c} 卡 × ${trimNum(hours)} 小时`;
+    chip.title = `应用：${c} 卡 × ${trimNum(hours)} 小时（${ttLabel}）`;
     chip.innerHTML = `<span class="bm-preset-c">${c} 卡</span><span class="bm-preset-h">·${trimNum(hours)}h</span><span class="bm-preset-x" title="删除此预设">✕</span>`;
     chip.addEventListener("click", (ev) => {
       if (ev.target.closest(".bm-preset-x")) return; // ✕ 自己处理
@@ -3085,9 +3160,10 @@ function refreshGpusPresets() {
     });
     chip.querySelector(".bm-preset-x").addEventListener("click", (ev) => {
       ev.stopPropagation();
-      if (!confirm(`删除预设：${bm} × ${c} 卡（${trimNum(hours)}h）？`)) return;
-      pushHistory(`删除预设 ${bm}×${c}卡`);
-      delete state.benchmarks[bm][c];
+      if (!confirm(`删除预设：${bm} · ${ttLabel} × ${c} 卡（${trimNum(hours)}h）？`)) return;
+      pushHistory(`删除预设 ${bm}·${ttLabel}×${c}卡`);
+      const b = bmGetBucket(bm, cleanTt);
+      if (b) delete b[c];
       save();
       refreshGpusHistory();
       refreshGpusPresets();
@@ -3115,8 +3191,21 @@ function deleteBenchmark(name) {
     alert("请先选中一个 Benchmark 再删除。");
     return false;
   }
-  const records = Object.keys(state.benchmarks[name] || {}).length;
-  if (!confirm(`删除 Benchmark「${name}」？\n${records ? `将一并清除 ${records} 条历史卡数→时长记录。` : ""}\n（已绑定此 Benchmark 的任务不会被删除，仅清空其 benchmark 字段。）`)) return false;
+  // 新结构下 benchmarks[name] 是 { "评估": {...}, "训练": {...}, "": {...} }
+  // 历史记录条数 = 所有子桶里的卡数总数
+  const root = state.benchmarks[name] || {};
+  let records = 0;
+  const ttSummary = [];
+  for (const tt of Object.keys(root)) {
+    const sub = root[tt];
+    if (sub && typeof sub === "object") {
+      const n = Object.keys(sub).length;
+      records += n;
+      if (n > 0) ttSummary.push(`${tt || "通用"}×${n}`);
+    }
+  }
+  const detail = records ? `将一并清除 ${records} 条历史记录（${ttSummary.join("、")}）。` : "";
+  if (!confirm(`删除 Benchmark「${name}」？\n${detail}\n（已绑定此 Benchmark 的任务不会被删除，仅清空其 benchmark 字段。）`)) return false;
   pushHistory(`删除 Benchmark「${name}」`);
   delete state.benchmarks[name];
   for (const t of state.tasks) {
@@ -3147,11 +3236,31 @@ function deleteTaskType(name) {
     return false;
   }
   const inUse = state.tasks.filter(t => t.taskType === name).length;
-  if (!confirm(`删除任务类型「${name}」？\n${inUse ? `当前有 ${inUse} 个任务正在使用，将清空其 taskType 字段（不删除任务）。` : ""}`)) return false;
+  // 统计有多少 benchmark 子桶会被一并清掉
+  let bmRecords = 0;
+  const affectedBms = [];
+  for (const bm of Object.keys(state.benchmarks || {})) {
+    const sub = state.benchmarks[bm] && state.benchmarks[bm][name];
+    if (sub && typeof sub === "object") {
+      const n = Object.keys(sub).length;
+      if (n > 0) { bmRecords += n; affectedBms.push(`${bm}×${n}`); }
+    }
+  }
+  const tail = [
+    inUse ? `当前有 ${inUse} 个任务正在使用，将清空其 taskType 字段（不删除任务）。` : "",
+    bmRecords ? `将一并清除 ${bmRecords} 条 Benchmark 推荐记录（${affectedBms.join("、")}）。` : "",
+  ].filter(Boolean).join("\n");
+  if (!confirm(`删除任务类型「${name}」？\n${tail}`)) return false;
   pushHistory(`删除任务类型「${name}」`);
   state.taskTypes = state.taskTypes.filter(x => x !== name);
   for (const t of state.tasks) {
     if (t.taskType === name) delete t.taskType;
+  }
+  // 清掉所有 benchmark 下名为 name 的子桶
+  for (const bm of Object.keys(state.benchmarks || {})) {
+    if (state.benchmarks[bm] && state.benchmarks[bm][name]) {
+      delete state.benchmarks[bm][name];
+    }
   }
   save();
   setStatus(`已删除任务类型：${name}`);
@@ -3295,10 +3404,11 @@ function attachModalLinks() {
       }
       refreshGpusHistory();
       refreshGpusPresets();
+      updateRecoMeta();
     });
   }
 
-  // 任务类型切换：同样拦截 sentinel
+  // 任务类型切换：拦截 sentinel；其它情况联动刷新预设（评估 / 训练分桶推荐）
   const ttEl = $("#fTaskType");
   if (ttEl) {
     ttEl.addEventListener("change", () => {
@@ -3313,6 +3423,10 @@ function attachModalLinks() {
       } else {
         ttEl.dataset.prev = v;
       }
+      // 任务类型变化 → 历史 datalist 与预设芯片整套换桶
+      refreshGpusHistory();
+      refreshGpusPresets();
+      updateRecoMeta();
     });
   }
 }
@@ -3343,7 +3457,16 @@ function updateRecoMeta() {
   if (!meta) return;
   const gpus = Math.max(1, parseInt($("#fGpus").value, 10) || 1);
   const hours = Math.max(0.25, parseFloat($("#fHours").value) || 0);
-  meta.textContent = `条件：${gpus} 卡 × ${trimNum(hours)} 小时`;
+  const bm = $("#fBenchmark")?.value || "";
+  const tt = $("#fTaskType")?.value || "";
+  const cleanBm = (bm === SENT_NEW || bm === SENT_DEL) ? "" : bm;
+  const cleanTt = (tt === SENT_NEW || tt === SENT_DEL) ? "" : tt;
+  // 推荐时段本身只受 卡数 / 时长 影响；这里仅多展示一下当前推荐桶定位
+  let bucketLabel = "";
+  if (cleanBm) {
+    bucketLabel = `· 历史桶：${cleanBm}${cleanTt ? ` / ${cleanTt}` : "（通用）"}`;
+  }
+  meta.textContent = `条件：${gpus} 卡 × ${trimNum(hours)} 小时${bucketLabel}`;
 }
 
 function scheduleRecoRefresh(delay = 250) {
@@ -3441,10 +3564,11 @@ function saveModal() {
   }
   const color = $("#colorRow .color-chip.active")?.dataset.color || COLORS[0];
   // 把本次实际的「卡数 × 时长」回写到 benchmark 历史；只在选了 benchmark 时记录
+  // 二级桶 = 任务类型；未选类型时落在 [""] 通用桶；评估 / 训练等独立各存一份
   if (cleanBm) {
-    if (!state.benchmarks[cleanBm]) state.benchmarks[cleanBm] = {};
+    const bucket = bmEnsureBucket(cleanBm, cleanTt);
     const hours = (end - start) / HOUR_MS;
-    state.benchmarks[cleanBm][gpus] = Math.round(hours * 100) / 100;
+    bucket[gpus] = Math.round(hours * 100) / 100;
   }
   if (editingId) {
     pushHistory("编辑任务");
@@ -3703,6 +3827,7 @@ $("#importFile").addEventListener("change", (e) => {
         state.tasks = data.tasks;
         if (data.benchmarks && typeof data.benchmarks === "object") {
           state.benchmarks = Object.assign({}, state.benchmarks, data.benchmarks);
+          state.benchmarks = migrateBenchmarks(state.benchmarks);
         }
         if (Array.isArray(data.taskTypes) && data.taskTypes.length > 0) {
           state.taskTypes = data.taskTypes.filter(x => typeof x === "string" && x.trim());
