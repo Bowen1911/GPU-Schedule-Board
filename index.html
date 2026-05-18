@@ -3651,9 +3651,7 @@ $("#modalClose").addEventListener("click", closeModal);
 $("#fCancel").addEventListener("click", closeModal);
 $("#fSave").addEventListener("click", saveModal);
 $("#fDelete").addEventListener("click", deleteEditing);
-$("#modal").addEventListener("click", (e) => {
-  if (e.target.id === "modal") closeModal();
-});
+// 点击背景不关闭 modal，仅通过 ESC 或关闭按钮关闭
 
 $("#quotaInput").addEventListener("change", (e) => {
   const newQuota = Math.max(1, parseInt(e.target.value, 10) || 1);
